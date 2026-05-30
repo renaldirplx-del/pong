@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="utf-8">
+    <title>Game Pong</title>
+
+    <style>
+        body {
+            margin: 0;
+            background: #111111;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        canvas {
+            background: #0b0c10;
+            border: 2px solid #333;
+        }
+    </style>
+</head>
+
+<body>
+
+<canvas id="canvas" width="480" height="520"></canvas>
+
+<script>
+    var canvas = document.getElementById("canvas");
+    var ctx = canvas.getContext("2d");
+
+    var W = canvas.width;
+    var H = canvas.height;
+
+    var keys = {};
+    var lastTime = 0;
+    var paused = false;
+
+    // Score
+    var scorePlayer = 0;
+    var scoreAI = 0;
+
+    // Paddle
+    var PH = 80;
+    var PW = 12;
+
+    var aiSpeed = 160;
+
+    var player = {
+        x: 10,
+        y: H / 2 - PH / 2,
+        w: PW,
+        h: PH,
+        speed: 320
+    };
+
+    var ai = {
+        x: W - 10 - PW,
+        y: H / 2 - PH / 2,
+        w: PW,
+        h: PH
+    };
+
+    // Bola
+    var ball = {
+        x: W / 2,
+        y: H / 2,
+        vx: 200,
+        vy: 150,
+        r: 9,
+        trail: []
+    };
+
+    // Polish Effects
+    var particles = [];
+    var floats = [];
+    var shake = { timer: 0, int: 0 };
+    var slowMoTimer = 0;
+
+    function emitP(x, y, color, count) {
+        for (var i = 0; i < count; i++) {
+            particles.push({
+                x: x, y: y,
+                vx: (Math.random() - 0.5) * 200,
+                vy: (Math.random() - 0.5) * 200,
+                life: 0.5,
+                color: color
+            });
+        }
+    }
+
+    function spawnFloat(x, y, text, color) {
+        floats.push({
+            x: x, y: y,
+            text: text,
+            color: color,
+            life: 1.0,
+            opacity: 1
+        });
+    }
+
+    // Audio
+    var audioCtx = null;
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+    }
+
+    function blip() {
+        if (!audioCtx) return;
+        initAudio();
+        var osc = audioCtx.createOscillator();
+        var gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+    }
+
+    function update(dt) {
+
+        if (paused) return;
+
+        // Bonus 3: Slow Motion logic
+        if (slowMoTimer > 0) {
+            slowMoTimer -= dt;
+            dt *= 0.4;
+        }
+
+        // Update Screen Shake
+        if (shake.timer > 0) {
+            shake.timer -= dt;
+        }
+
+        // Update Particles
+        for (var i = particles.length - 1; i >= 0; i--) {
+            var p = particles[i];
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.life -= dt;
+            if (p.life <= 0) particles.splice(i, 1);
+        }
+
+        // Update Floats
+        for (var i = floats.length - 1; i >= 0; i--) {
+            var f = floats[i];
+            f.y -= 40 * dt;
+            f.life -= dt;
+            f.opacity = Math.max(0, f.life);
+            if (f.life <= 0) floats.splice(i, 1);
+        }
+
+        // Simpan posisi trail SEBELUM gerakkan bola
+        ball.trail.push({ x: ball.x, y: ball.y });
+        if (ball.trail.length > 10) ball.trail.shift(); // Max 10 titik
+
+        // Gerak player
+        if (keys["ArrowUp"] || keys["w"]) {
+            player.y -= player.speed * dt;
+        }
+
+        if (keys["ArrowDown"] || keys["s"]) {
+            player.y += player.speed * dt;
+        }
+
+        // Batas player
+        player.y = Math.max(0, Math.min(H - PH, player.y));
+
+        // AI
+        var aiTarget = ball.y - PH / 2;
+        var aiDiff = aiTarget - ai.y;
+
+        ai.y += Math.sign(aiDiff) *
+            Math.min(Math.abs(aiDiff), aiSpeed * dt);
+
+        ai.y = Math.max(0, Math.min(H - PH, ai.y));
+
+        // Gerak bola
+        ball.x += ball.vx * dt;
+        ball.y += ball.vy * dt;
+
+        // Pantul atas
+        if (ball.y - ball.r < 0) {
+            ball.y = ball.r;
+            ball.vy = Math.abs(ball.vy);
+            blip();
+        }
+
+        // Pantul bawah
+        if (ball.y + ball.r > H) {
+            ball.y = H - ball.r;
+            ball.vy = -Math.abs(ball.vy);
+            blip();
+        }
+
+        // Collision player
+        if (
+            ball.vx < 0 &&
+            ball.x - ball.r < player.x + PW &&
+            ball.y > player.y &&
+            ball.y < player.y + PH
+        ) {
+            ball.vx = Math.abs(ball.vx) * 1.05;
+
+            var rel =
+                (ball.y - (player.y + PH / 2)) / (PH / 2);
+
+            ball.vy = rel * 220;
+            blip();
+
+            // Partikel saat bola kena paddle PLAYER:
+            emitP(player.x + PW, ball.y, '#4facfe', 6);
+
+            // Bonus 3: Slow motion saat pantul
+            slowMoTimer = 0.5;
+
+            // Tambah kecepatan AI setiap kali player berhasil memukul
+            aiSpeed += 5;
+        }
+
+        // Collision AI
+        if (
+            ball.vx > 0 &&
+            ball.x + ball.r > ai.x &&
+            ball.y > ai.y &&
+            ball.y < ai.y + PH
+        ) {
+            ball.vx = -Math.abs(ball.vx) * 1.02;
+
+            var rel =
+                (ball.y - (ai.y + PH / 2)) / (PH / 2);
+
+            ball.vy = rel * 200;
+            blip();
+
+            // Partikel saat bola kena paddle AI:
+            emitP(ai.x, ball.y, '#ff6b6b', 6);
+
+            // Bonus 3: Slow motion saat pantul
+            slowMoTimer = 0.5;
+        }
+
+        // Poin AI
+        if (ball.x - ball.r < 0) {
+            scoreAI++;
+
+            // Saat AI gol (bola keluar kiri):
+            spawnFloat(W/2, H/2 - 30, 'AI Point', '#ff6b6b');
+            shake.timer = 0.22; shake.int = 8; // Shake saat AI gol!
+
+            ball.x = W / 2;
+            ball.y = H / 2;
+            ball.vx = 200;
+            ball.vy = 150;
+            
+            checkGameOver();
+        }
+
+        // Poin Player
+        if (ball.x + ball.r > W) {
+            scorePlayer++;
+
+            // Saat player gol (bola keluar kanan):
+            spawnFloat(W/2, H/2 - 30, 'Your Point!', '#43e97b');
+            // Tidak perlu shake - ini momen senang!
+
+            ball.x = W / 2;
+            ball.y = H / 2;
+            ball.vx = -200;
+            ball.vy = 150;
+
+            checkGameOver();
+        }
+    }
+
+    function checkGameOver() {
+        if (scorePlayer >= 5) {
+            alert("WIN!");
+            document.location.reload();
+        }
+
+        if (scoreAI >= 5) {
+            alert("LOSE!");
+            document.location.reload();
+        }
+    }
+
+    function render() {
+
+        // Handle Screen Shake
+        ctx.save();
+        if (shake.timer > 0) {
+            var rx = (Math.random() - 0.5) * shake.int;
+            var ry = (Math.random() - 0.5) * shake.int;
+            ctx.translate(rx, ry);
+        }
+
+        // Background
+        ctx.fillStyle = "#0b0c10";
+        ctx.fillRect(0, 0, W, H);
+
+        // Grid background
+        ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+        ctx.lineWidth = 1;
+        for (var i = 0; i < W; i += 40) {
+            ctx.beginPath();
+            ctx.moveTo(i, 0);
+            ctx.lineTo(i, H);
+            ctx.stroke();
+        }
+        for (var i = 0; i < H; i += 40) {
+            ctx.beginPath();
+            ctx.moveTo(0, i);
+            ctx.lineTo(W, i);
+            ctx.stroke();
+        }
+
+        // Garis putus-putus di tengah
+        ctx.setLineDash([10, 10]);
+        ctx.beginPath();
+        ctx.moveTo(W / 2, 0);
+        ctx.lineTo(W / 2, H);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Render Trail Bola
+        for (var i = 0; i < ball.trail.length; i++) {
+            // Bonus 4: Warna trail mengikuti warna bola
+            var speed = Math.sqrt(ball.vx**2 + ball.vy**2);
+            var hue = Math.max(0, 240 - (speed - 250) * 0.8); 
+            // 240 (biru) -> 0 (merah)
+            
+            // Makin tua titik (i kecil), makin transparan
+            ctx.globalAlpha = (i / ball.trail.length) * 0.35;
+            ctx.fillStyle = 'hsl(' + hue + ', 100%, 70%)';
+            ctx.beginPath();
+            // Makin tua, makin kecil
+            ctx.arc(ball.trail[i].x, ball.trail[i].y, 
+                    ball.r * (i / ball.trail.length) * 0.9, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1; // Reset!
+
+        // Render Particles
+        particles.forEach(p => {
+            ctx.fillStyle = p.color;
+            ctx.globalAlpha = p.life * 2;
+            ctx.fillRect(p.x, p.y, 3, 3);
+        });
+        ctx.globalAlpha = 1.0;
+
+        // Bonus 1: Paddle berdenyut saat bola dekat
+        var distToPlayer = Math.sqrt((ball.x - player.x)**2 + (ball.y - (player.y + PH/2))**2);
+        var pGlow = 10;
+        if (distToPlayer < 100) {
+            pGlow = 10 + Math.sin(Date.now() / 100) * 10;
+        }
+
+        // Glow paddle player (biru)
+        ctx.shadowBlur = pGlow;
+        ctx.shadowColor = '#4facfe';
+        ctx.fillStyle = "#4facfe";
+        ctx.fillRect(
+            player.x,
+            player.y,
+            player.w,
+            player.h
+        );
+        ctx.shadowBlur = 0;
+
+        // Glow paddle AI (merah)
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#ff6b6b';
+        ctx.fillStyle = "#ff6b6b";
+        ctx.fillRect(
+            ai.x,
+            ai.y,
+            ai.w,
+            ai.h
+        );
+        ctx.shadowBlur = 0;
+
+        // Bonus 4: Bola berubah warna berdasarkan kecepatan
+        var ballSpeed = Math.sqrt(ball.vx**2 + ball.vy**2);
+        var ballHue = Math.max(0, 240 - (ballSpeed - 250) * 0.8);
+        var ballColor = 'hsl(' + ballHue + ', 100%, 70%)';
+
+        // Glow bola
+        ctx.shadowBlur = 14;
+        ctx.shadowColor = ballColor;
+        ctx.fillStyle = ballColor;
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Score
+        ctx.fillStyle = "rgba(255,255,255,0.15)";
+        ctx.font = "bold 60px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(
+            scorePlayer + "  " + scoreAI,
+            W / 2,
+            80
+        );
+
+        // Bonus 2: Speedometer
+        ctx.font = "bold 14px Arial";
+        ctx.fillStyle = "rgba(255,255,255,0.5)";
+        ctx.fillText("SPEED: " + Math.round(ballSpeed), W/2, 110);
+
+        // Render Floats
+        floats.forEach(f => {
+            ctx.fillStyle = f.color;
+            ctx.globalAlpha = f.opacity;
+            ctx.font = "bold 30px Arial";
+            ctx.fillText(f.text, f.x, f.y);
+        });
+        ctx.globalAlpha = 1.0;
+
+        ctx.restore();
+
+        // Render Pause Overlay
+        if (paused) {
+            ctx.fillStyle = "rgba(0,0,0,0.5)";
+            ctx.fillRect(0, 0, W, H);
+            ctx.fillStyle = "#fff";
+            ctx.font = "bold 40px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText("PAUSED", W / 2, H / 2);
+            ctx.font = "20px Arial";
+            ctx.fillText("Press 'P' to Resume", W / 2, H / 2 + 40);
+        }
+    }
+
+    function loop(ts) {
+
+        var dt = Math.min((ts - lastTime) / 1000, 0.05);
+
+        lastTime = ts;
+
+        update(dt);
+        render();
+
+        requestAnimationFrame(loop);
+    }
+
+    // Keyboard
+    document.addEventListener("keydown", function (e) {
+        keys[e.key] = true;
+        initAudio(); // Initialize audio on first key press
+
+        if (e.key.toLowerCase() === 'p') {
+            paused = !paused;
+        }
+    });
+
+    document.addEventListener("keyup", function (e) {
+        keys[e.key] = false;
+    });
+
+    requestAnimationFrame(loop);
+</script>
+
+
+</body>
+</html>
